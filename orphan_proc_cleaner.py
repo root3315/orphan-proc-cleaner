@@ -13,6 +13,45 @@ from datetime import datetime
 from typing import List, Dict, Optional, Set
 
 
+def get_process_start_time(pid: int) -> Optional[float]:
+    """Get process start time in seconds since epoch from /proc/[pid]/stat."""
+    proc_path = Path(f"/proc/{pid}")
+    stat_path = proc_path / "stat"
+
+    if not stat_path.exists():
+        return None
+
+    try:
+        with open(stat_path, "r") as f:
+            stat_content = f.read().strip()
+
+        parts = stat_content.split(")", 1)
+        if len(parts) < 2:
+            return None
+
+        stat_fields = parts[1].split()
+        starttime = int(stat_fields[19])
+
+        clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        boot_time = get_boot_time()
+
+        return boot_time + (starttime / clk_tck)
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+        return None
+
+
+def get_boot_time() -> float:
+    """Get system boot time in seconds since epoch."""
+    try:
+        with open("/proc/stat", "r") as f:
+            for line in f:
+                if line.startswith("btime"):
+                    return float(line.split()[1])
+    except (FileNotFoundError, PermissionError, ValueError, IndexError):
+        pass
+    return time.time()
+
+
 def get_process_info(pid: int) -> Optional[Dict]:
     """Retrieve process information from /proc filesystem."""
     proc_path = Path(f"/proc/{pid}")
@@ -43,6 +82,8 @@ def get_process_info(pid: int) -> Optional[Dict]:
         pgrp = int(stat_fields[2])
         session = int(stat_fields[4])
 
+        start_time = get_process_start_time(pid)
+
         return {
             "pid": pid,
             "ppid": ppid,
@@ -50,6 +91,7 @@ def get_process_info(pid: int) -> Optional[Dict]:
             "session": session,
             "state": state,
             "cmdline": cmdline or f"[{pid}]",
+            "start_time": start_time,
         }
     except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
         return None
@@ -70,7 +112,30 @@ def get_all_pids() -> Set[int]:
     return pids
 
 
-def find_orphaned_processes() -> List[Dict]:
+def filter_by_min_age(
+    processes: List[Dict],
+    min_age: int
+) -> List[Dict]:
+    """Filter processes to only include those older than min_age seconds."""
+    if min_age <= 0:
+        return processes
+
+    current_time = time.time()
+    filtered = []
+
+    for proc in processes:
+        start_time = proc.get("start_time")
+        if start_time is None:
+            continue
+
+        age = current_time - start_time
+        if age >= min_age:
+            filtered.append(proc)
+
+    return filtered
+
+
+def find_orphaned_processes(min_age: int = 0) -> List[Dict]:
     """
     Find orphaned processes - those whose parent PID is 1 (init/systemd)
     but are not expected to be daemon processes.
@@ -101,10 +166,10 @@ def find_orphaned_processes() -> List[Dict]:
                 if state in ["R", "S", "D"]:
                     orphaned.append(proc_info)
 
-    return orphaned
+    return filter_by_min_age(orphaned, min_age)
 
 
-def find_zombie_processes() -> List[Dict]:
+def find_zombie_processes(min_age: int = 0) -> List[Dict]:
     """Find zombie processes (state = Z)."""
     all_pids = get_all_pids()
     zombies = []
@@ -117,10 +182,10 @@ def find_zombie_processes() -> List[Dict]:
         if proc_info["state"] == "Z":
             zombies.append(proc_info)
 
-    return zombies
+    return filter_by_min_age(zombies, min_age)
 
 
-def find_defunct_processes() -> List[Dict]:
+def find_defunct_processes(min_age: int = 0) -> List[Dict]:
     """Find defunct processes by checking cmdline."""
     all_pids = get_all_pids()
     defunct = []
@@ -133,7 +198,7 @@ def find_defunct_processes() -> List[Dict]:
         if "<defunct>" in proc_info["cmdline"]:
             defunct.append(proc_info)
 
-    return defunct
+    return filter_by_min_age(defunct, min_age)
 
 
 def send_signal_to_process(pid: int, sig: int) -> bool:
@@ -303,17 +368,17 @@ def main() -> int:
     all_targeted = []
 
     if args.zombies:
-        zombies = find_zombie_processes()
+        zombies = find_zombie_processes(min_age=args.min_age)
         print_process_table(zombies, "Zombie Processes")
         all_targeted.extend(zombies)
 
     if args.defunct:
-        defunct = find_defunct_processes()
+        defunct = find_defunct_processes(min_age=args.min_age)
         print_process_table(defunct, "Defunct Processes")
         all_targeted.extend(defunct)
 
     if args.orphans:
-        orphans = find_orphaned_processes()
+        orphans = find_orphaned_processes(min_age=args.min_age)
         print_process_table(orphans, "Orphaned Processes")
         all_targeted.extend(orphans)
 

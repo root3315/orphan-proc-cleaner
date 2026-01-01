@@ -53,6 +53,18 @@ python orphan_proc_cleaner.py --all --force
 python orphan_proc_cleaner.py --all --log /var/log/orphan-cleaner.log
 ```
 
+### Filter by process age
+
+Only clean processes that have been running for at least N seconds:
+
+```bash
+# Only clean orphans older than 60 seconds
+python orphan_proc_cleaner.py --orphans --min-age 60
+
+# Clean zombies older than 5 minutes
+python orphan_proc_cleaner.py --zombies --min-age 300
+```
+
 ## Command Line Options
 
 | Flag | Description |
