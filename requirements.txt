@@ -1,0 +1,6 @@
+# No external dependencies required
+# This project uses only Python standard library modules:
+# - os, sys, signal, argparse, time
+# - pathlib, datetime, typing
+#
+# Python 3.6+ required for f-strings and typing hints
